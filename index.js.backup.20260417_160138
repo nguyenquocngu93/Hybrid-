@@ -408,63 +408,40 @@ function handleStream(type, id, cfg, res, pub) {
             return searchBitsearchAndCsv(query, cfg.maxResults || 30);
         }).catch(function() { return searchBitsearchAndCsv(imdbId, cfg.maxResults || 30); })
         .then(function(results) {
-            // ========== SẮP XẾP THEO commonSort ==========
-            if (commonSort === 'seeds') {
-                results.sort(function(a, b) { return b.seeds - a.seeds; });
-            } else if (commonSort === 'date') {
-                results.sort(function(a, b) { return (b.date || 0) - (a.date || 0); });
-            } else {
-                results.sort(function(a, b) { return b.sizeGB - a.sizeGB; });
-            }
-            
             results.forEach(function(t) {
                 if (!t.magnet) return;
                 
                 var title = t.title;
+
+                // --- Hàm kiểm tra tập lẻ nghiêm ngặt ---
+                var isStrictEpisode = false;
+                if (type === 'series' && season > 0 && episode > 0) {
+                    // Chuẩn hóa title để dễ regex
+                    var normalizedTitle = title.replace(/\./g, ' ').replace(/_/g, ' ').replace(/-/g, ' ').replace(/[\[\]\(\)]/g, ' ');
+                    var s = season.toString().padStart(2, '0');
+                    var e = episode.toString().padStart(2, '0');
+                    
+                    // 1. Kiểm tra pattern chính xác: S01E01
+                    if (new RegExp('S' + s + '\\s*E' + e + '(?:\\D|$)', 'i').test(normalizedTitle)) isStrictEpisode = true;
+                    // 2. Kiểm tra pattern số tập đứng riêng (nhưng phải chắc chắn không phải pack)
+                    else if (!/S\d{1,2}(?!\d)|Season\s*\d|Complete|Pack|合集|全/.test(title) && 
+                             new RegExp('\\b' + episode + '\\b').test(normalizedTitle) && 
+                             new RegExp('\\b' + season + '\\b').test(normalizedTitle)) isStrictEpisode = true;
+                }
+
+                var isPack = /S\d{1,2}(?!\d)|Season\s*\d|Complete|Pack|合集|全/.test(title) && !isStrictEpisode;
                 
-                var episodeMatch = title.match(/\bS(\d{1,2})\s*E(\d{1,2})\b/i);
-                var isSingleEpisode = episodeMatch !== null;
-                var isPack = !isSingleEpisode;
-                
-                if (isSingleEpisode && type === 'series' && season > 0 && episode > 0) {
-                    var torrentSeason = parseInt(episodeMatch[1]);
-                    var torrentEpisode = parseInt(episodeMatch[2]);
-                    if (torrentSeason !== season || torrentEpisode !== episode) {
-                        console.log('[Nguồn 2] ⏭️ Bỏ qua tập lẻ S' + torrentSeason + 'E' + torrentEpisode);
+                // Nếu là tập lẻ nhưng không khớp chính xác -> bỏ qua
+                if (type === 'series' && season > 0 && episode > 0 && !isPack) {
+                    if (!isStrictEpisode) {
+                        console.log('[Nguồn 2] ⏭️ Bỏ qua tập không khớp: "' + title + '"');
                         return;
                     }
                 }
-                
-                // Lọc season cho PACK nguồn 2
-                if (isPack && type === 'series' && season > 0) {
-                    var sPad = String(season).padStart(2, '0');
-                    var seasonPattern = new RegExp('S' + sPad + '(?:[^\\d]|$)|Season\\s*' + season + '(?:[^\\d]|$)|第\\s*' + season + '\\s*季|S' + season + '(?:[^\\d]|$)', 'i');
-                    var otherSeasonPattern = /S\d{1,2}(?:[^\d]|$)|Season\s*\d|第\s*\d+\s*季/gi;
-                    
-                    var hasOtherSeason = false;
-                    var matches = title.match(otherSeasonPattern);
-                    if (matches) {
-                        for (var i = 0; i < matches.length; i++) {
-                            var m = matches[i];
-                            if (!seasonPattern.test(m)) {
-                                var otherSeasonMatch = m.match(/\d+/);
-                                if (otherSeasonMatch && parseInt(otherSeasonMatch[0]) !== season) {
-                                    hasOtherSeason = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    
-                    if (hasOtherSeason) {
-                        console.log('[Nguồn 2] ⏭️ Bỏ qua PACK có season khác');
-                        return;
-                    }
-                }
-                
+
                 var sizeGB = t.sizeGB.toFixed(2);
                 var streamName = '🟢 ' + t.tracker;
-                var badge = isPack ? '📦 PACK | ' : '🎬 TẬP LẺ | ';
+                var badge = isPack ? '📦 PACK | ' : (type === 'series' ? '🎬 TẬP LẺ | ' : '');
                 var displayTitle = badge + title + '\n' + sizeGB + 'GB | 🟢 ' + t.seeds + '\n📡 Nguồn: ' + t.tracker;
                 
                 if (type === 'movie') {
@@ -486,49 +463,6 @@ function handleStream(type, id, cfg, res, pub) {
         searchJacred(imdbId, type, cfg.maxResults || 30, commonSort, apiUrl).then(function(results) {
             results.forEach(function(t) {
                 if (!t.magnet) return;
-                
-                var title = t.title;
-                
-                // ========== LỌC SEASON CHO NGUỒN 1 ==========
-                if (type === 'series' && season > 0) {
-                    var sPad = String(season).padStart(2, '0');
-                    
-                    var completePackPattern = /S\d{1,2}[-~]S?\d{1,2}|Season\s*\d+\s*[-~]\s*\d+|сезон[ы]?\s*\d+\s*[-~]\s*\d+|Complete|Полный|Все\s*сезон[ы]?|1-\d+\s*сезон/i;
-                    var isCompletePack = completePackPattern.test(title);
-                    
-                    if (!isCompletePack) {
-                        var singleSeasonPattern = new RegExp('S' + sPad + '(?:[^\\d]|$)|Season\\s*' + season + '(?:[^\\d]|$)|сезон\\s*' + season + '(?:[^\\d]|$)|' + season + '\\s*сезон', 'i');
-                        var otherSeasonPattern = /S\d{1,2}(?:[^\d]|$)|Season\s*\d|сезон\s*\d|\d+\s*сезон/gi;
-                        
-                        var hasOtherSeason = false;
-                        var matches = title.match(otherSeasonPattern);
-                        if (matches) {
-                            for (var i = 0; i < matches.length; i++) {
-                                var m = matches[i];
-                                if (!singleSeasonPattern.test(m)) {
-                                    var otherSeasonMatch = m.match(/\d+/);
-                                    if (otherSeasonMatch && parseInt(otherSeasonMatch[0]) !== season) {
-                                        hasOtherSeason = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        
-                        if (hasOtherSeason) {
-                            console.log('[jac.red] ⏭️ Bỏ qua PACK từng season khác: ' + title);
-                            return;
-                        }
-                        
-                        if (!singleSeasonPattern.test(title) && /S\d{1,2}|Season\s*\d|сезон\s*\d/.test(title)) {
-                            console.log('[jac.red] ⏭️ Bỏ qua PACK không rõ season: ' + title);
-                            return;
-                        }
-                    } else {
-                        console.log('[jac.red] 📦 PACK TRỌN BỘ: ' + title);
-                    }
-                }
-                
                 var trackerDisplay = t.tracker.charAt(0).toUpperCase() + t.tracker.slice(1);
                 var sizeGB = t.sizeGB.toFixed(2), seeds = t.sid, quality = t.quality || '', videoType = t.videoType || '', audio = t.audio || '';
                 var streamName = '🔴 ' + trackerDisplay, streamTitle = t.title + '\n' + sizeGB + 'GB | 🟢 ' + seeds;

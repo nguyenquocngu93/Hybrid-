@@ -408,15 +408,6 @@ function handleStream(type, id, cfg, res, pub) {
             return searchBitsearchAndCsv(query, cfg.maxResults || 30);
         }).catch(function() { return searchBitsearchAndCsv(imdbId, cfg.maxResults || 30); })
         .then(function(results) {
-            // ========== SẮP XẾP THEO commonSort ==========
-            if (commonSort === 'seeds') {
-                results.sort(function(a, b) { return b.seeds - a.seeds; });
-            } else if (commonSort === 'date') {
-                results.sort(function(a, b) { return (b.date || 0) - (a.date || 0); });
-            } else {
-                results.sort(function(a, b) { return b.sizeGB - a.sizeGB; });
-            }
-            
             results.forEach(function(t) {
                 if (!t.magnet) return;
                 
@@ -493,10 +484,12 @@ function handleStream(type, id, cfg, res, pub) {
                 if (type === 'series' && season > 0) {
                     var sPad = String(season).padStart(2, '0');
                     
+                    // Pattern nhận diện PACK TRỌN BỘ (luôn hiển thị)
                     var completePackPattern = /S\d{1,2}[-~]S?\d{1,2}|Season\s*\d+\s*[-~]\s*\d+|сезон[ы]?\s*\d+\s*[-~]\s*\d+|Complete|Полный|Все\s*сезон[ы]?|1-\d+\s*сезон/i;
                     var isCompletePack = completePackPattern.test(title);
                     
                     if (!isCompletePack) {
+                        // Pattern nhận diện PACK TỪNG SEASON (cần khớp season)
                         var singleSeasonPattern = new RegExp('S' + sPad + '(?:[^\\d]|$)|Season\\s*' + season + '(?:[^\\d]|$)|сезон\\s*' + season + '(?:[^\\d]|$)|' + season + '\\s*сезон', 'i');
                         var otherSeasonPattern = /S\d{1,2}(?:[^\d]|$)|Season\s*\d|сезон\s*\d|\d+\s*сезон/gi;
                         
@@ -520,6 +513,7 @@ function handleStream(type, id, cfg, res, pub) {
                             return;
                         }
                         
+                        // Nếu không có dấu hiệu của season hiện tại, cũng bỏ qua
                         if (!singleSeasonPattern.test(title) && /S\d{1,2}|Season\s*\d|сезон\s*\d/.test(title)) {
                             console.log('[jac.red] ⏭️ Bỏ qua PACK không rõ season: ' + title);
                             return;
