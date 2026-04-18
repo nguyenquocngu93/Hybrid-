@@ -13,6 +13,7 @@
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
+    "cheerio": "^1.2.0",
     "node-fetch": "^2.7.0",
     "stremio-addon-sdk": "^1.6.0"
   }

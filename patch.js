@@ -1,156 +1,62 @@
-var fs = require('fs');
-var code = fs.readFileSync('index.js', 'utf8');
+const fs = require('fs');
+const path = require('path');
+const filePath = path.join(process.env.HOME, 'stremio-addon', 'index.js');
 
-var oldCode = `    if (cfg.jacredEnabled) {
-        getSearchTitles(imdbId, type).then(function(searchTitles) {
-            console.log('[jac.red] Search titles:', searchTitles);
+console.log('🔧 开始修补 index.js...');
+let content = fs.readFileSync(filePath, 'utf8');
 
-            // Fetch song song tất cả tên
-            var fetchPromises = searchTitles.map(function(t) {
-                return fetch(JAC_RED_API + '?search=' + encodeURIComponent(t), { timeout: 10000 })
-                    .then(function(r) { return r.ok ? r.json() : []; })
-                    .catch(function() { return []; });
-            });
+// 1. 在 DEFAULT_CONFIG 中添加 preferPack 和 searchLanguage
+const oldDefault = "animeMode: false,";
+content = content.replace(oldDefault, oldDefault + '\n    preferPack: true,\n    searchLanguage: \'ru\',');
 
-            return Promise.all(fetchPromises);
-        }).then(function(results) {
-            // Gộp và loại trùng theo magnet hash
-            var seen = {}, unique = [];
-            results.forEach(function(arr) {
-                (arr || []).forEach(function(t) {
-                    if (!t.magnet) return;
-                    var h = t.magnet.match(/btih:([a-fA-F0-9]{40})/i);
-                    var k = h ? h[1].toLowerCase() : t.magnet;
-                    if (!seen[k]) { seen[k] = true; unique.push(t); }
-                });
-            });
+// 2. 在 buildConfigPage 中插入 UI 卡片
+const animeCardMarker = '<div class="card"><div class="card-header"><div class="card-icon ci-red">🎌</div><h2>Anime Mode</h2>';
+const newCard = `
+<div class="card"><div class="card-header"><div class="card-icon ci-purple">🔍</div><h2>Tùy chỉnh tìm kiếm</h2></div>
+<div class="fg"><label>🌐 Ngôn ngữ tìm kiếm</label>
+<select id="searchLanguage">
+<option value="ru" ' + (cfg.searchLanguage === 'ru' ? 'selected' : '') + '>🇷🇺 Tiếng Nga (khuyến nghị)</option>
+<option value="en" ' + (cfg.searchLanguage === 'en' ? 'selected' : '') + '>🇬🇧 Tiếng Anh</option>
+</select><p class="hint">Tiếng Nga cho kết quả tốt hơn trên jac.red và Knaben</p></div>
+<div class="trow"><div class="trow-info"><div class="trow-label">📦 Ưu tiên Pack</div><div class="trow-sub">Tắt để tìm tập lẻ chính xác (SxxExx)</div></div><label class="sw"><input type="checkbox" id="preferPack"' + (cfg.preferPack !== false ? ' checked' : '') + '><span class="sl"></span></label></div>
+</div>`;
 
-            var jacSort   = cfg.jacredSortBy || 'size';
-            var processed = unique.map(function(t) {
-                return {
-                    original : t,
-                    title    : decodeUnicode(t.title || ''),
-                    sizeGB   : parseSize(t.sizeName),
-                    date     : t.createTime ? new Date(t.createTime).getTime() : 0,
-                    sid      : t.sid || 0
-                };
-            });
+content = content.replace(animeCardMarker, newCard + animeCardMarker);
 
-            processed = sortJacredResults(processed, jacSort).slice(0, cfg.maxResults || 30);
-            console.log('[jac.red] Tổng ' + unique.length + ' unique → hiển thị ' + processed.length);
+// 3. 更新 getCurrentConfig
+const oldGetter = "animeMode:document.getElementById(\"animeMode\").checked,";
+const newGetter = "animeMode:document.getElementById(\"animeMode\").checked,\n            preferPack:document.getElementById(\"preferPack\").checked,\n            searchLanguage:document.getElementById(\"searchLanguage\").value,";
+content = content.replace(oldGetter, newGetter);
 
-            processed.forEach(function(t) {
-                if (!t.original.magnet) return;
-                var magnet      = t.original.magnet;
-                var trackerName = getTrackerName(magnet);
-                var info        = buildInfo(t, jacSort, trackerName);
+// 4. 升级 searchKnaben 函数签名
+content = content.replace(
+    "function searchKnaben(query, maxResults) {",
+    "function searchKnaben(query, maxResults, type, preferPack, season, episode, language) {"
+);
 
-                if (type === 'movie') {
-                    streams.push({
-                        name  : '🔗 ' + trackerName,
-                        title : '📥 ' + t.title + '\\n' + info,
-                        url   : ts + '/stream/' + encodeURIComponent(t.title) + '?link=' + encodeURIComponent(magnet) + '&index=0&play',
-                        behaviorHints: { notWebReady: true, bingeGroup: 'jacred-' + idClean }
-                    });
-                } else {
-                    streams.push({
-                        name  : '🔗 ' + trackerName,
-                        title : '📥 ' + t.title + '\\n' + info,
-                        url   : pub + '/play?magnet=' + encodeURIComponent(magnet) + '&s=' + season + '&e=' + episode + '&title=' + encodeURIComponent(t.title) + '&ts=' + encodeURIComponent(ts),
-                        behaviorHints: { notWebReady: true, bingeGroup: 'jacred-' + idClean }
-                    });
-                }
-            });
+// 5. 替换 URL 构造逻辑
+const oldUrlLine = "var url = KNABEN_URL + encodeURIComponent(query);";
+const newUrlLogic = `
+    var baseUrl = 'https://knaben.org/search/';
+    var filterSegment = '0/1/bytes';
+    if (type === 'movie') filterSegment = '3000000/1/bytes';
+    else if (type === 'series') filterSegment = '2000000/1/bytes';
+    var finalQuery = query;
+    if (type === 'series' && !preferPack && season && episode) {
+        var s = String(season).padStart(2, '0');
+        var e = String(episode).padStart(2, '0');
+        finalQuery = query + ' S' + s + 'E' + e;
+    }
+    var url = baseUrl + encodeURIComponent(finalQuery) + '/' + filterSegment;`;
+content = content.replace(oldUrlLine, newUrlLogic);
 
-            sendResponse();
-        }).catch(function(e) {
-            console.error('[jac.red]', e.message);
-            sendResponse();
-        });
-    }`;
+// 6. 更新 handleStream 中对 searchKnaben 的调用
+const oldCall = "return searchKnaben(query, cfg.maxResults || 30);";
+const newCall = `var useRu = (cfg.searchLanguage === 'ru');
+            var finalQuery = useRu ? ruTitle : originalTitle;
+            if (!finalQuery) finalQuery = originalTitle || imdbId;
+            return searchKnaben(finalQuery, cfg.maxResults || 30, type, cfg.preferPack, season, episode, cfg.searchLanguage);`;
+content = content.replace(oldCall, newCall);
 
-var newCode = `    if (cfg.jacredEnabled) {
-        getSearchTitles(imdbId, type).then(function(searchTitles) {
-            console.log('[jac.red] Search titles:', searchTitles);
-
-            var seen = {}, unique = [];
-
-            function searchNext(index) {
-                if (index >= searchTitles.length) {
-                    var jacSort   = cfg.jacredSortBy || 'size';
-                    var processed = unique.map(function(t) {
-                        return {
-                            original : t,
-                            title    : decodeUnicode(t.title || ''),
-                            sizeGB   : parseSize(t.sizeName),
-                            date     : t.createTime ? new Date(t.createTime).getTime() : 0,
-                            sid      : t.sid || 0
-                        };
-                    });
-                    processed = sortJacredResults(processed, jacSort).slice(0, cfg.maxResults || 30);
-                    console.log('[jac.red] Tổng ' + unique.length + ' unique → hiển thị ' + processed.length);
-
-                    processed.forEach(function(t) {
-                        if (!t.original.magnet) return;
-                        var magnet      = t.original.magnet;
-                        var trackerName = getTrackerName(magnet);
-                        var info        = buildInfo(t, jacSort, trackerName);
-                        if (type === 'movie') {
-                            streams.push({
-                                name  : '🔗 ' + trackerName,
-                                title : '📥 ' + t.title + '\\n' + info,
-                                url   : ts + '/stream/' + encodeURIComponent(t.title) + '?link=' + encodeURIComponent(magnet) + '&index=0&play',
-                                behaviorHints: { notWebReady: true, bingeGroup: 'jacred-' + idClean }
-                            });
-                        } else {
-                            streams.push({
-                                name  : '🔗 ' + trackerName,
-                                title : '📥 ' + t.title + '\\n' + info,
-                                url   : pub + '/play?magnet=' + encodeURIComponent(magnet) + '&s=' + season + '&e=' + episode + '&title=' + encodeURIComponent(t.title) + '&ts=' + encodeURIComponent(ts),
-                                behaviorHints: { notWebReady: true, bingeGroup: 'jacred-' + idClean }
-                            });
-                        }
-                    });
-
-                    sendResponse();
-                    return;
-                }
-
-                var title = searchTitles[index];
-                console.log('[jac.red] [' + (index+1) + '/' + searchTitles.length + '] Search: "' + title + '"');
-
-                fetch(JAC_RED_API + '?search=' + encodeURIComponent(title), { timeout: 10000 })
-                    .then(function(r) { return r.ok ? r.json() : []; })
-                    .catch(function() { return []; })
-                    .then(function(arr) {
-                        var newCount = 0;
-                        (arr || []).forEach(function(t) {
-                            if (!t.magnet) return;
-                            var h = t.magnet.match(/btih:([a-fA-F0-9]{40})/i);
-                            var k = h ? h[1].toLowerCase() : t.magnet;
-                            if (!seen[k]) { seen[k] = true; unique.push(t); newCount++; }
-                        });
-                        console.log('[jac.red] "' + title + '" → ' + (arr||[]).length + ' kết quả, +' + newCount + ' mới');
-                        searchNext(index + 1);
-                    });
-            }
-
-            searchNext(0);
-
-        }).catch(function(e) {
-            console.error('[jac.red]', e.message);
-            sendResponse();
-        });
-    }`;
-
-if (code.indexOf(oldCode) === -1) {
-    console.log('❌ Không tìm thấy đoạn code cần thay!');
-    process.exit(1);
-}
-
-fs.writeFileSync('index.js.bak', code, 'utf8');
-console.log('💾 Đã backup → index.js.bak');
-
-code = code.replace(oldCode, newCode);
-fs.writeFileSync('index.js', code, 'utf8');
-console.log('✅ Thay thành công!');
+fs.writeFileSync(filePath, content, 'utf8');
+console.log('✅ 修补完成！请运行: pm2 restart stremio-addon');
